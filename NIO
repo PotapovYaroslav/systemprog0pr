@@ -1,0 +1,109 @@
+import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousFileChannel;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.concurrent.Future;
+
+public class Main {
+
+    // Создаёт текстовый файл с заданным количеством строк
+    static void createFile(Path path, int lines) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i <= lines; i++) {
+            sb.append("Строка номер ").append(i).append("\n");
+        }
+        // Files.write записывает текст в файл (если файла нет - создаст его)
+        Files.write(path, sb.toString().getBytes("UTF-8"));
+    }
+
+    // Синхронное копирование: поток ждёт, пока выполнится каждая операция
+    static void copySync(Path src, Path dst) throws Exception {
+        // Открываем каналы: один для чтения, другой для записи
+        FileChannel in = FileChannel.open(src, StandardOpenOption.READ);
+        FileChannel out = FileChannel.open(dst, StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+
+        // Буфер - блок памяти, через который идут данные (8 КБ)
+        ByteBuffer buffer = ByteBuffer.allocate(8192);
+
+        // read() читает из канала в буфер, вернёт -1, когда файл закончился
+        while (in.read(buffer) != -1) {
+            buffer.flip();      // переключаем буфер с записи на чтение
+            out.write(buffer);  // записываем содержимое буфера в новый файл
+            buffer.clear();     // очищаем буфер для следующей порции
+        }
+
+        in.close();
+        out.close();
+    }
+
+    // Асинхронное копирование двух файлов: операции запускаются
+    // и не блокируют программу, результат получаем через Future
+    static void copyAsync(Path src1, Path dst1, Path src2, Path dst2) throws Exception {
+        // Асинхронные каналы для чтения двух файлов
+        AsynchronousFileChannel in1 = AsynchronousFileChannel.open(src1, StandardOpenOption.READ);
+        AsynchronousFileChannel in2 = AsynchronousFileChannel.open(src2, StandardOpenOption.READ);
+
+        // Буферы размером с файл
+        ByteBuffer buf1 = ByteBuffer.allocate((int) in1.size());
+        ByteBuffer buf2 = ByteBuffer.allocate((int) in2.size());
+
+        // Запускаем чтение обоих файлов сразу (они читаются одновременно)
+        Future<Integer> read1 = in1.read(buf1, 0);
+        Future<Integer> read2 = in2.read(buf2, 0);
+
+        // Ждём окончания чтения
+        read1.get();
+        read2.get();
+
+        // Переключаем буферы с записи на чтение
+        buf1.flip();
+        buf2.flip();
+
+        // Асинхронные каналы для записи в новые файлы
+        AsynchronousFileChannel out1 = AsynchronousFileChannel.open(dst1,
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        AsynchronousFileChannel out2 = AsynchronousFileChannel.open(dst2,
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+
+        // Запускаем запись обоих файлов сразу
+        Future<Integer> write1 = out1.write(buf1, 0);
+        Future<Integer> write2 = out2.write(buf2, 0);
+
+        // Ждём окончания записи
+        write1.get();
+        write2.get();
+
+        // Закрываем каналы
+        in1.close();
+        in2.close();
+        out1.close();
+        out2.close();
+    }
+
+    public static void main(String[] args) throws Exception {
+        // Пути к исходным файлам (будут лежать в папке проекта)
+        Path src1 = Paths.get("file1.txt");
+        Path src2 = Paths.get("file2.txt");
+
+        // Создаём два исходных файла по 200000 строк
+        createFile(src1, 200000);
+        createFile(src2, 200000);
+
+        // --- Синхронное копирование: файлы копируются по очереди ---
+        long start = System.nanoTime();
+        copySync(src1, Paths.get("sync_copy1.txt"));
+        copySync(src2, Paths.get("sync_copy2.txt"));
+        long syncTime = (System.nanoTime() - start) / 1000; // в микросекундах
+        System.out.println("Синхронное копирование: " + syncTime + " мкс");
+
+        // --- Асинхронное копирование: файлы копируются одновременно ---
+        start = System.nanoTime();
+        copyAsync(src1, Paths.get("async_copy1.txt"), src2, Paths.get("async_copy2.txt"));
+        long asyncTime = (System.nanoTime() - start) / 1000;
+        System.out.println("Асинхронное копирование: " + asyncTime + " мкс");
+    }
+}
